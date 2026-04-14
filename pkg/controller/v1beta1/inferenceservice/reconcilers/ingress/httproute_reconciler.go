@@ -166,6 +166,68 @@ func createHTTPRouteRule(routeMatches []gwapiv1.HTTPRouteMatch, filters []gwapiv
 	return rule
 }
 
+// createHTTPRouteMatchWithType creates an HTTPRouteMatch with a configurable path match type.
+func createHTTPRouteMatchWithType(matchValue string, matchType gwapiv1.PathMatchType) gwapiv1.HTTPRouteMatch {
+	return gwapiv1.HTTPRouteMatch{
+		Path: &gwapiv1.HTTPPathMatch{
+			Type:  ptr.To(matchType),
+			Value: ptr.To(matchValue),
+		},
+	}
+}
+
+// createHTTPRouteRuleWithTimeouts is like createHTTPRouteRule but also sets the optional backendRequest timeout.
+func createHTTPRouteRuleWithTimeouts(routeMatches []gwapiv1.HTTPRouteMatch, filters []gwapiv1.HTTPRouteFilter, serviceName, namespace string, port int32, requestTimeout, backendTimeout *gwapiv1.Duration) gwapiv1.HTTPRouteRule { //nolint:unparam
+	rule := createHTTPRouteRule(routeMatches, filters, serviceName, namespace, port, requestTimeout)
+	if backendTimeout != nil {
+		if rule.Timeouts == nil {
+			rule.Timeouts = &gwapiv1.HTTPRouteTimeouts{}
+		}
+		rule.Timeouts.BackendRequest = backendTimeout
+	}
+	return rule
+}
+
+// rawSectionName returns a SectionName pointer when gatewayListenerName is set, or nil to attach to all listeners.
+func rawSectionName(cfg *v1beta1.RawDeploymentIngressConfig) *gwapiv1.SectionName {
+	if cfg == nil || cfg.GatewayListenerName == "" {
+		return nil
+	}
+	s := gwapiv1.SectionName(cfg.GatewayListenerName)
+	return &s
+}
+
+// applyRewriteFilter prepends an optional URLRewrite filter to a filter slice.
+func applyRewriteFilter(filters []gwapiv1.HTTPRouteFilter, rewriteFilter *gwapiv1.HTTPRouteFilter) []gwapiv1.HTTPRouteFilter {
+	if rewriteFilter == nil {
+		return filters
+	}
+	result := make([]gwapiv1.HTTPRouteFilter, 0, len(filters)+1)
+	result = append(result, *rewriteFilter)
+	result = append(result, filters...)
+	return result
+}
+
+// mergeRouteLabels merges rawDeployment.routeLabels into the provided label map (in-place), taking precedence over ISVC labels.
+func mergeRouteLabels(labels map[string]string, ingressConfig *v1beta1.IngressConfig) {
+	if ingressConfig.RawDeployment == nil {
+		return
+	}
+	for k, v := range ingressConfig.RawDeployment.RouteLabels {
+		labels[k] = v
+	}
+}
+
+// resolveRawRequestTimeout returns the effective request timeout, preferring rawDeployment.requestTimeout when set.
+func resolveRawRequestTimeout(disableTimeout bool, componentTimeout *int64, rawCfg *v1beta1.RawDeploymentIngressConfig) *gwapiv1.Duration {
+	timeout := resolveTimeout(disableTimeout, componentTimeout)
+	if rawCfg != nil && rawCfg.RequestTimeout != "" {
+		d := gwapiv1.Duration(rawCfg.RequestTimeout)
+		return &d
+	}
+	return timeout
+}
+
 func createRawPredictorHTTPRoute(isvc *v1beta1.InferenceService, ingressConfig *v1beta1.IngressConfig,
 	isvcConfig *v1beta1.InferenceServicesConfig,
 ) (*gwapiv1.HTTPRoute, error) {
@@ -201,6 +263,7 @@ func createRawPredictorHTTPRoute(isvc *v1beta1.InferenceService, ingressConfig *
 	labels := utils.Filter(isvc.Labels, func(key string) bool {
 		return !utils.Includes(isvcConfig.ServiceLabelDisallowedList, key)
 	})
+	mergeRouteLabels(labels, ingressConfig)
 	gatewaySlice := strings.Split(ingressConfig.KserveIngressGateway, "/")
 	httpRoute := gwapiv1.HTTPRoute{
 		ObjectMeta: metav1.ObjectMeta{
@@ -215,10 +278,11 @@ func createRawPredictorHTTPRoute(isvc *v1beta1.InferenceService, ingressConfig *
 			CommonRouteSpec: gwapiv1.CommonRouteSpec{
 				ParentRefs: []gwapiv1.ParentReference{
 					{
-						Group:     (*gwapiv1.Group)(&gwapiv1.GroupVersion.Group),
-						Kind:      (*gwapiv1.Kind)(ptr.To(constants.GatewayKind)),
-						Namespace: (*gwapiv1.Namespace)(&gatewaySlice[0]),
-						Name:      gwapiv1.ObjectName(gatewaySlice[1]),
+						Group:       (*gwapiv1.Group)(&gwapiv1.GroupVersion.Group),
+						Kind:        (*gwapiv1.Kind)(ptr.To(constants.GatewayKind)),
+						Namespace:   (*gwapiv1.Namespace)(&gatewaySlice[0]),
+						Name:        gwapiv1.ObjectName(gatewaySlice[1]),
+						SectionName: rawSectionName(ingressConfig.RawDeployment),
 					},
 				},
 			},
@@ -262,6 +326,7 @@ func createRawTransformerHTTPRoute(isvc *v1beta1.InferenceService, ingressConfig
 	labels := utils.Filter(isvc.Labels, func(key string) bool {
 		return !utils.Includes(isvcConfig.ServiceLabelDisallowedList, key)
 	})
+	mergeRouteLabels(labels, ingressConfig)
 	gatewaySlice := strings.Split(ingressConfig.KserveIngressGateway, "/")
 	httpRoute := gwapiv1.HTTPRoute{
 		ObjectMeta: metav1.ObjectMeta{
@@ -276,10 +341,11 @@ func createRawTransformerHTTPRoute(isvc *v1beta1.InferenceService, ingressConfig
 			CommonRouteSpec: gwapiv1.CommonRouteSpec{
 				ParentRefs: []gwapiv1.ParentReference{
 					{
-						Group:     (*gwapiv1.Group)(&gwapiv1.GroupVersion.Group),
-						Kind:      (*gwapiv1.Kind)(ptr.To(constants.GatewayKind)),
-						Namespace: (*gwapiv1.Namespace)(&gatewaySlice[0]),
-						Name:      gwapiv1.ObjectName(gatewaySlice[1]),
+						Group:       (*gwapiv1.Group)(&gwapiv1.GroupVersion.Group),
+						Kind:        (*gwapiv1.Kind)(ptr.To(constants.GatewayKind)),
+						Namespace:   (*gwapiv1.Namespace)(&gatewaySlice[0]),
+						Name:        gwapiv1.ObjectName(gatewaySlice[1]),
+						SectionName: rawSectionName(ingressConfig.RawDeployment),
 					},
 				},
 			},
@@ -325,6 +391,7 @@ func createRawExplainerHTTPRoute(isvc *v1beta1.InferenceService, ingressConfig *
 	labels := utils.Filter(isvc.Labels, func(key string) bool {
 		return !utils.Includes(isvcConfig.ServiceLabelDisallowedList, key)
 	})
+	mergeRouteLabels(labels, ingressConfig)
 	gatewaySlice := strings.Split(ingressConfig.KserveIngressGateway, "/")
 	httpRoute := gwapiv1.HTTPRoute{
 		ObjectMeta: metav1.ObjectMeta{
@@ -339,10 +406,11 @@ func createRawExplainerHTTPRoute(isvc *v1beta1.InferenceService, ingressConfig *
 			CommonRouteSpec: gwapiv1.CommonRouteSpec{
 				ParentRefs: []gwapiv1.ParentReference{
 					{
-						Group:     (*gwapiv1.Group)(&gwapiv1.GroupVersion.Group),
-						Kind:      (*gwapiv1.Kind)(ptr.To(constants.GatewayKind)),
-						Namespace: (*gwapiv1.Namespace)(&gatewaySlice[0]),
-						Name:      gwapiv1.ObjectName(gatewaySlice[1]),
+						Group:       (*gwapiv1.Group)(&gwapiv1.GroupVersion.Group),
+						Kind:        (*gwapiv1.Kind)(ptr.To(constants.GatewayKind)),
+						Namespace:   (*gwapiv1.Namespace)(&gatewaySlice[0]),
+						Name:        gwapiv1.ObjectName(gatewaySlice[1]),
+						SectionName: rawSectionName(ingressConfig.RawDeployment),
 					},
 				},
 			},
@@ -373,95 +441,156 @@ func createRawTopLevelHTTPRoute(isvc *v1beta1.InferenceService, ingressConfig *v
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate top level ingress host: %w", err)
 	}
-	allowedHosts = append(allowedHosts, gwapiv1.Hostname(topLevelHost))
-	domainList := []string{ingressConfig.IngressDomain}
-	additionalHosts := GetAdditionalHosts(&domainList, topLevelHost, ingressConfig)
-	// Add additional hosts to allowed hosts
-	if additionalHosts != nil {
-		hostMap := make(map[gwapiv1.Hostname]bool, len(allowedHosts))
-		for _, host := range allowedHosts {
-			hostMap[host] = true
-		}
-		for _, additionalHost := range *additionalHosts {
-			gwHost := gwapiv1.Hostname(additionalHost)
-			if _, found := hostMap[gwHost]; !found {
-				allowedHosts = append(allowedHosts, gwHost)
+	// When disableHostBasedRouting is set, omit hostnames so the gateway listener's own filter applies.
+	// topLevelHost is still used below for status URL generation.
+	disableHostRouting := ingressConfig.RawDeployment != nil && ingressConfig.RawDeployment.DisableHostBasedRouting && ingressConfig.PathTemplate != ""
+	if !disableHostRouting {
+		allowedHosts = append(allowedHosts, gwapiv1.Hostname(topLevelHost))
+		domainList := []string{ingressConfig.IngressDomain}
+		additionalHosts := GetAdditionalHosts(&domainList, topLevelHost, ingressConfig)
+		// Add additional hosts to allowed hosts
+		if additionalHosts != nil {
+			hostMap := make(map[gwapiv1.Hostname]bool, len(allowedHosts))
+			for _, host := range allowedHosts {
+				hostMap[host] = true
+			}
+			for _, additionalHost := range *additionalHosts {
+				gwHost := gwapiv1.Hostname(additionalHost)
+				if _, found := hostMap[gwHost]; !found {
+					allowedHosts = append(allowedHosts, gwHost)
+				}
 			}
 		}
 	}
 	// Add isvc name and namespace headers
 	filters := []gwapiv1.HTTPRouteFilter{addIsvcHeaders(isvc.Name, isvc.Namespace)}
 
-	if isvc.Spec.Explainer != nil {
-		// Scenario: When explainer present
-		if !isvc.Status.IsConditionReady(v1beta1.ExplainerReady) {
-			isvc.Status.SetCondition(v1beta1.IngressReady, &knapis.Condition{
-				Type:   v1beta1.IngressReady,
-				Status: corev1.ConditionFalse,
-				Reason: "Explainer ingress not created",
-			})
-			return nil, nil
+	// Host-based catch-all rules are only generated when host-based routing is active.
+	if !disableHostRouting {
+		if isvc.Spec.Explainer != nil {
+			// Scenario: When explainer present
+			if !isvc.Status.IsConditionReady(v1beta1.ExplainerReady) {
+				isvc.Status.SetCondition(v1beta1.IngressReady, &knapis.Condition{
+					Type:   v1beta1.IngressReady,
+					Status: corev1.ConditionFalse,
+					Reason: "Explainer ingress not created",
+				})
+				return nil, nil
+			}
+			timeout := resolveTimeout(ingressConfig.DisableHTTPRouteTimeout, isvc.Spec.Explainer.TimeoutSeconds)
+			// Add toplevel host :explain route
+			// :explain routes to the explainer when there is only explainer
+			explainRouteMatch := []gwapiv1.HTTPRouteMatch{createHTTPRouteMatch(constants.ExplainPrefix())}
+			httpRouteRules = append(httpRouteRules, createHTTPRouteRule(explainRouteMatch, filters,
+				explainerName, isvc.Namespace, constants.CommonDefaultHttpPort, timeout))
 		}
-		timeout := resolveTimeout(ingressConfig.DisableHTTPRouteTimeout, isvc.Spec.Explainer.TimeoutSeconds)
-		// Add toplevel host :explain route
-		// :explain routes to the explainer when there is only explainer
-		explainRouteMatch := []gwapiv1.HTTPRouteMatch{createHTTPRouteMatch(constants.ExplainPrefix())}
-		httpRouteRules = append(httpRouteRules, createHTTPRouteRule(explainRouteMatch, filters,
-			explainerName, isvc.Namespace, constants.CommonDefaultHttpPort, timeout))
-	}
-	if isvc.Spec.Transformer != nil {
-		// Scenario: When predictor with transformer and with/without explainer present
-		if !isvc.Status.IsConditionReady(v1beta1.TransformerReady) {
-			isvc.Status.SetCondition(v1beta1.IngressReady, &knapis.Condition{
-				Type:   v1beta1.IngressReady,
-				Status: corev1.ConditionFalse,
-				Reason: "Transformer ingress not created",
-			})
-			return nil, nil
+		if isvc.Spec.Transformer != nil {
+			// Scenario: When predictor with transformer and with/without explainer present
+			if !isvc.Status.IsConditionReady(v1beta1.TransformerReady) {
+				isvc.Status.SetCondition(v1beta1.IngressReady, &knapis.Condition{
+					Type:   v1beta1.IngressReady,
+					Status: corev1.ConditionFalse,
+					Reason: "Transformer ingress not created",
+				})
+				return nil, nil
+			}
+			timeout := resolveTimeout(ingressConfig.DisableHTTPRouteTimeout, isvc.Spec.Transformer.TimeoutSeconds)
+			// :predict routes to the transformer when there are both predictor and transformer
+			routeMatch := []gwapiv1.HTTPRouteMatch{createHTTPRouteMatch(constants.FallbackPrefix())}
+			httpRouteRules = append(httpRouteRules, createHTTPRouteRule(routeMatch, filters, transformerName, isvc.Namespace, constants.CommonDefaultHttpPort, timeout))
+		} else {
+			// Scenario: When predictor without transformer and with/without explainer present
+			timeout := resolveTimeout(ingressConfig.DisableHTTPRouteTimeout, isvc.Spec.Predictor.TimeoutSeconds)
+			// Add toplevel host rules for predictor which routes all traffic to predictor
+			routeMatch := []gwapiv1.HTTPRouteMatch{createHTTPRouteMatch(constants.FallbackPrefix())}
+			httpRouteRules = append(httpRouteRules, createHTTPRouteRule(routeMatch, filters, predictorName, isvc.Namespace, constants.CommonDefaultHttpPort, timeout))
 		}
-		timeout := resolveTimeout(ingressConfig.DisableHTTPRouteTimeout, isvc.Spec.Transformer.TimeoutSeconds)
-		// :predict routes to the transformer when there are both predictor and transformer
-		routeMatch := []gwapiv1.HTTPRouteMatch{createHTTPRouteMatch(constants.FallbackPrefix())}
-		httpRouteRules = append(httpRouteRules, createHTTPRouteRule(routeMatch, filters, transformerName, isvc.Namespace, constants.CommonDefaultHttpPort, timeout))
-	} else {
-		// Scenario: When predictor without transformer and with/without explainer present
-		timeout := resolveTimeout(ingressConfig.DisableHTTPRouteTimeout, isvc.Spec.Predictor.TimeoutSeconds)
-		// Add toplevel host rules for predictor which routes all traffic to predictor
-		routeMatch := []gwapiv1.HTTPRouteMatch{createHTTPRouteMatch(constants.FallbackPrefix())}
-		httpRouteRules = append(httpRouteRules, createHTTPRouteRule(routeMatch, filters, predictorName, isvc.Namespace, constants.CommonDefaultHttpPort, timeout))
 	}
 
 	// Add path based routing rules
 	if ingressConfig.PathTemplate != "" {
+		rawCfg := ingressConfig.RawDeployment // may be nil when absent
+
 		path, err := GenerateUrlPath(isvc.Name, isvc.Namespace, ingressConfig)
 		if err != nil {
 			log.Error(err, "Failed to generate URL from pathTemplate")
 			return nil, fmt.Errorf("failed to generate URL from pathTemplate: %w", err)
 		}
 		path = strings.TrimSuffix(path, "/") // remove trailing "/" if present
-		// Include ingressDomain to the allowed hosts
-		allowedHosts = append(allowedHosts, gwapiv1.Hostname(ingressConfig.IngressDomain))
+
+		// Include ingressDomain to the allowed hosts unless host-based routing is disabled
+		if rawCfg == nil || !rawCfg.DisableHostBasedRouting {
+			allowedHosts = append(allowedHosts, gwapiv1.Hostname(ingressConfig.IngressDomain))
+		}
+
+		// Resolve path match type (defaults to RegularExpression to preserve current behaviour).
+		pathMatchType := gwapiv1.PathMatchRegularExpression
+		if rawCfg != nil && rawCfg.PathMatchType == string(gwapiv1.PathMatchPathPrefix) {
+			pathMatchType = gwapiv1.PathMatchPathPrefix
+		}
+
+		// Resolve optional URL rewrite filter
+		var rewriteFilter *gwapiv1.HTTPRouteFilter
+		if rawCfg != nil && rawCfg.PathRewriteTarget != "" {
+			rewriteTarget := rawCfg.PathRewriteTarget
+			rewriteFilter = &gwapiv1.HTTPRouteFilter{
+				Type: gwapiv1.HTTPRouteFilterURLRewrite,
+				URLRewrite: &gwapiv1.HTTPURLRewriteFilter{
+					Path: &gwapiv1.HTTPPathModifier{
+						Type:               gwapiv1.PrefixMatchHTTPPathModifier,
+						ReplacePrefixMatch: &rewriteTarget,
+					},
+				},
+			}
+		}
+
+		// Resolve optional timeout overrides from rawDeployment config
+		var rawBackendTimeout *gwapiv1.Duration
+		if rawCfg != nil && rawCfg.BackendRequestTimeout != "" {
+			d := gwapiv1.Duration(rawCfg.BackendRequestTimeout)
+			rawBackendTimeout = &d
+		}
 
 		if isvc.Spec.Explainer != nil {
-			timeout := resolveTimeout(ingressConfig.DisableHTTPRouteTimeout, isvc.Spec.Explainer.TimeoutSeconds)
-			// Add path based routing rule for :explain endpoint
-			explainerPathRouteMatch := []gwapiv1.HTTPRouteMatch{createHTTPRouteMatch(path + constants.PathBasedExplainPrefix())}
-			httpRouteRules = append(httpRouteRules, createHTTPRouteRule(explainerPathRouteMatch, filters, explainerName, isvc.Namespace,
-				constants.CommonDefaultHttpPort, timeout))
+			// Gate on explainer readiness: when disableHostRouting is true the check above is skipped.
+			if !isvc.Status.IsConditionReady(v1beta1.ExplainerReady) {
+				isvc.Status.SetCondition(v1beta1.IngressReady, &knapis.Condition{
+					Type:   v1beta1.IngressReady,
+					Status: corev1.ConditionFalse,
+					Reason: "Explainer ingress not created",
+				})
+				return nil, nil
+			}
+			timeout := resolveRawRequestTimeout(ingressConfig.DisableHTTPRouteTimeout, isvc.Spec.Explainer.TimeoutSeconds, rawCfg)
+			// Add path based routing rule for :explain endpoint.
+			// PathBasedExplainPrefix() returns a regex fragment, so the match type must
+			// always be RegularExpression regardless of the configured pathMatchType.
+			explainerPathRouteMatch := []gwapiv1.HTTPRouteMatch{createHTTPRouteMatchWithType(path+constants.PathBasedExplainPrefix(), gwapiv1.PathMatchRegularExpression)}
+			httpRouteRules = append(httpRouteRules, createHTTPRouteRuleWithTimeouts(explainerPathRouteMatch, applyRewriteFilter(filters, rewriteFilter), explainerName, isvc.Namespace,
+				constants.CommonDefaultHttpPort, timeout, rawBackendTimeout))
 		}
 		// Add path based routing rule for :predict endpoint
 		if isvc.Spec.Transformer != nil {
-			timeout := resolveTimeout(ingressConfig.DisableHTTPRouteTimeout, isvc.Spec.Transformer.TimeoutSeconds)
+			// Gate on transformer readiness: when disableHostRouting is true the check above is skipped.
+			if !isvc.Status.IsConditionReady(v1beta1.TransformerReady) {
+				isvc.Status.SetCondition(v1beta1.IngressReady, &knapis.Condition{
+					Type:   v1beta1.IngressReady,
+					Status: corev1.ConditionFalse,
+					Reason: "Transformer ingress not created",
+				})
+				return nil, nil
+			}
+			timeout := resolveRawRequestTimeout(ingressConfig.DisableHTTPRouteTimeout, isvc.Spec.Transformer.TimeoutSeconds, rawCfg)
 			// :predict routes to the transformer when there are both predictor and transformer
-			pathRouteMatch := []gwapiv1.HTTPRouteMatch{createHTTPRouteMatch(path + "/")}
-			httpRouteRules = append(httpRouteRules, createHTTPRouteRule(pathRouteMatch, filters, transformerName, isvc.Namespace,
-				constants.CommonDefaultHttpPort, timeout))
+			pathRouteMatch := []gwapiv1.HTTPRouteMatch{createHTTPRouteMatchWithType(path+"/", pathMatchType)}
+			httpRouteRules = append(httpRouteRules, createHTTPRouteRuleWithTimeouts(pathRouteMatch, applyRewriteFilter(filters, rewriteFilter), transformerName, isvc.Namespace,
+				constants.CommonDefaultHttpPort, timeout, rawBackendTimeout))
 		} else {
-			timeout := resolveTimeout(ingressConfig.DisableHTTPRouteTimeout, isvc.Spec.Predictor.TimeoutSeconds)
+			timeout := resolveRawRequestTimeout(ingressConfig.DisableHTTPRouteTimeout, isvc.Spec.Predictor.TimeoutSeconds, rawCfg)
 			// :predict routes to the predictor when there is only predictor
-			pathRouteMatch := []gwapiv1.HTTPRouteMatch{createHTTPRouteMatch(path + "/")}
-			httpRouteRules = append(httpRouteRules, createHTTPRouteRule(pathRouteMatch, filters, predictorName, isvc.Namespace,
-				constants.CommonDefaultHttpPort, timeout))
+			pathRouteMatch := []gwapiv1.HTTPRouteMatch{createHTTPRouteMatchWithType(path+"/", pathMatchType)}
+			httpRouteRules = append(httpRouteRules, createHTTPRouteRuleWithTimeouts(pathRouteMatch, applyRewriteFilter(filters, rewriteFilter), predictorName, isvc.Namespace,
+				constants.CommonDefaultHttpPort, timeout, rawBackendTimeout))
 		}
 	}
 
@@ -471,6 +600,7 @@ func createRawTopLevelHTTPRoute(isvc *v1beta1.InferenceService, ingressConfig *v
 	labels := utils.Filter(isvc.Labels, func(key string) bool {
 		return !utils.Includes(isvcConfig.ServiceLabelDisallowedList, key)
 	})
+	mergeRouteLabels(labels, ingressConfig)
 	gatewaySlice := strings.Split(ingressConfig.KserveIngressGateway, "/")
 	httpRoute := gwapiv1.HTTPRoute{
 		ObjectMeta: metav1.ObjectMeta{
@@ -485,10 +615,11 @@ func createRawTopLevelHTTPRoute(isvc *v1beta1.InferenceService, ingressConfig *v
 			CommonRouteSpec: gwapiv1.CommonRouteSpec{
 				ParentRefs: []gwapiv1.ParentReference{
 					{
-						Group:     (*gwapiv1.Group)(&gwapiv1.GroupVersion.Group),
-						Kind:      (*gwapiv1.Kind)(ptr.To(constants.GatewayKind)),
-						Namespace: (*gwapiv1.Namespace)(&gatewaySlice[0]),
-						Name:      gwapiv1.ObjectName(gatewaySlice[1]),
+						Group:       (*gwapiv1.Group)(&gwapiv1.GroupVersion.Group),
+						Kind:        (*gwapiv1.Kind)(ptr.To(constants.GatewayKind)),
+						Namespace:   (*gwapiv1.Namespace)(&gatewaySlice[0]),
+						Name:        gwapiv1.ObjectName(gatewaySlice[1]),
+						SectionName: rawSectionName(ingressConfig.RawDeployment),
 					},
 				},
 			},
