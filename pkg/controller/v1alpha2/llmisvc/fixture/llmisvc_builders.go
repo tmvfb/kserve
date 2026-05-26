@@ -23,6 +23,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/utils/ptr"
 	"knative.dev/pkg/apis"
 	gwapiv1 "sigs.k8s.io/gateway-api/apis/v1"
 	"sigs.k8s.io/yaml"
@@ -63,7 +64,25 @@ func WithModelName(name string) LLMInferenceServiceOption {
 	}
 }
 
-func WithGatewayRefs(refs ...v1alpha2.UntypedObjectReference) LLMInferenceServiceOption {
+func WithLoRAAdapters(adapterNames ...string) LLMInferenceServiceOption {
+	return func(llmSvc *v1alpha2.LLMInferenceService) {
+		if llmSvc.Spec.Model.LoRA == nil {
+			llmSvc.Spec.Model.LoRA = &v1alpha2.LoRASpec{}
+		}
+		for _, name := range adapterNames {
+			adapterURL, err := apis.ParseURL("hf://test-org/" + name)
+			if err != nil {
+				panic(err)
+			}
+			llmSvc.Spec.Model.LoRA.Adapters = append(llmSvc.Spec.Model.LoRA.Adapters, v1alpha2.LLMModelSpec{
+				Name: ptr.To(name),
+				URI:  *adapterURL,
+			})
+		}
+	}
+}
+
+func WithGatewayRefs(refs ...v1alpha2.GatewayObjectReference) LLMInferenceServiceOption {
 	return func(llmSvc *v1alpha2.LLMInferenceService) {
 		if llmSvc.Spec.Router == nil {
 			llmSvc.Spec.Router = &v1alpha2.RouterSpec{}
@@ -145,10 +164,22 @@ func WithLabels(labelsToAdd map[string]string) LLMInferenceServiceOption {
 	}
 }
 
-func LLMGatewayRef(name, namespace string) v1alpha2.UntypedObjectReference {
-	return v1alpha2.UntypedObjectReference{
-		Name:      gwapiv1.ObjectName(name),
-		Namespace: gwapiv1.Namespace(namespace),
+func LLMGatewayRef(name, namespace string) v1alpha2.GatewayObjectReference {
+	return v1alpha2.GatewayObjectReference{
+		UntypedObjectReference: v1alpha2.UntypedObjectReference{
+			Name:      gwapiv1.ObjectName(name),
+			Namespace: gwapiv1.Namespace(namespace),
+		},
+	}
+}
+
+func LLMGatewayRefWithSection(name, namespace, sectionName string) v1alpha2.GatewayObjectReference {
+	return v1alpha2.GatewayObjectReference{
+		UntypedObjectReference: v1alpha2.UntypedObjectReference{
+			Name:      gwapiv1.ObjectName(name),
+			Namespace: gwapiv1.Namespace(namespace),
+		},
+		SectionName: ptr.To(gwapiv1.SectionName(sectionName)),
 	}
 }
 

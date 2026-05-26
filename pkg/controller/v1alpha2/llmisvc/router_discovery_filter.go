@@ -43,14 +43,18 @@ func IsExternalURL(url *apis.URL) bool {
 	return !IsInternalURL(url)
 }
 
-// FilterInternalURLs returns only the URLs that are internal/private
-func FilterInternalURLs(urls []*apis.URL) []*apis.URL {
-	return utils.FilterSlice(urls, IsInternalURL)
+// FilterInternalURLs returns only the discovered URLs that are internal/private
+func FilterInternalURLs(urls []DiscoveredURL) []DiscoveredURL {
+	return utils.FilterSlice(urls, func(d DiscoveredURL) bool {
+		return IsInternalURL(d.URL)
+	})
 }
 
-// FilterExternalURLs returns only the URLs that are external/public
-func FilterExternalURLs(urls []*apis.URL) []*apis.URL {
-	return utils.FilterSlice(urls, IsExternalURL)
+// FilterExternalURLs returns only the discovered URLs that are external/public
+func FilterExternalURLs(urls []DiscoveredURL) []DiscoveredURL {
+	return utils.FilterSlice(urls, func(d DiscoveredURL) bool {
+		return IsExternalURL(d.URL)
+	})
 }
 
 // isInternalIP checks if an IP address is in a private range
@@ -69,18 +73,27 @@ func IsClusterLocalURL(url *apis.URL) bool {
 	return strings.HasSuffix(host, network.GetClusterDomainName())
 }
 
+func IsModelRoutingURL(url *apis.URL) bool {
+	return url.Path == "/" || url.Path == ""
+}
+
 // AddressTypeName returns the type name for a URL to be used in Addressable.Name:
 // - "gateway-external" for public addresses
 // - "gateway-internal" for cluster-local gateway service URLs
 // - "internal" for private IPs or other internal hostnames
 func AddressTypeName(url *apis.URL) string {
+	typeName := "gateway-external"
 	if IsClusterLocalURL(url) {
-		return "gateway-internal"
+		typeName = "gateway-internal"
+	} else if IsInternalURL(url) {
+		typeName = "internal"
 	}
-	if IsInternalURL(url) {
-		return "internal"
+
+	if IsModelRoutingURL(url) {
+		return typeName + "-model-routing"
 	}
-	return "gateway-external"
+
+	return typeName
 }
 
 // isInternalHostname checks if a hostname appears to be internal

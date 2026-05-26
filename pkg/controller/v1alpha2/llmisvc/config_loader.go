@@ -93,6 +93,9 @@ type Config struct {
 	UrlScheme               string `json:"urlScheme,omitempty"`
 	EnableTLS               bool   `json:"enableTLS,omitempty"`
 
+	ModelBasedRoutingHeaderName string                `json:"modelBasedRoutingHeaderName,omitempty"`
+	ModelBasedRoutingMode       ModelBasedRoutingMode `json:"modelBasedRoutingMode,omitempty"`
+
 	// WVAAutoscalingConfig holds Prometheus and monitoring settings for WVA autoscaling.
 	// nil when the "autoscaling-wva-controller-config" key is not present in inferenceservice-config.
 	WVAAutoscalingConfig *WVAAutoscalingConfig `json:"-"`
@@ -102,6 +105,12 @@ type Config struct {
 	StorageConfig    *types.StorageInitializerConfig `json:"-"`
 	CredentialConfig *credentials.CredentialConfig   `json:"-"`
 	SchedulerConfig  *SchedulerConfig                `json:"-"`
+
+	// ResolvedLoRAAdapters holds the resolved LoRA adapter list derived from the final merged spec.
+	// Populated inside combineBaseRefsConfig (after all spec overlays and variable substitution)
+	// so that resolution is tied to the config-merge step and all downstream workload functions
+	// share a single consistent result.
+	ResolvedLoRAAdapters []resolvedLoRAAdapter `json:"-"`
 }
 
 // PrometheusConfig holds Prometheus connection and authentication settings used by KEDA
@@ -155,14 +164,16 @@ func NewConfig(ingressConfig *v1beta1.IngressConfig, storageConfig *types.Storag
 	}
 
 	return &Config{
-		SystemNamespace:         constants.KServeNamespace,
-		IngressGatewayNamespace: igwNs,
-		IngressGatewayName:      igwName,
-		UrlScheme:               ingressConfig.UrlScheme,
-		EnableTLS:               ingressConfig.EnableLLMInferenceServiceTLS,
-		StorageConfig:           storageConfig,
-		CredentialConfig:        credentialConfig,
-		SchedulerConfig:         schedulerConfig,
+		SystemNamespace:             constants.KServeNamespace,
+		IngressGatewayNamespace:     igwNs,
+		IngressGatewayName:          igwName,
+		UrlScheme:                   ingressConfig.UrlScheme,
+		EnableTLS:                   ingressConfig.EnableLLMInferenceServiceTLS,
+		ModelBasedRoutingHeaderName: ingressConfig.ModelBasedRoutingHeaderName,
+		ModelBasedRoutingMode:       parseModelBasedRoutingMode(ingressConfig.ModelBasedRoutingMode),
+		StorageConfig:               storageConfig,
+		CredentialConfig:            credentialConfig,
+		SchedulerConfig:             schedulerConfig,
 	}
 }
 
